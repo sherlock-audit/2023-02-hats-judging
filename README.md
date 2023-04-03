@@ -1,83 +1,4 @@
-# Issue H-1: middle level admins can steal child trees because function unlinkTopHatFromTree() is callable by them 
-
-Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/116 
-
-## Found by 
-unforgiven
-
-## Summary
-in normal scenario middle level admins can't relink a child tree to another tree and when code link a tree it checks that the old and new admin is in the same tree(have same tippy hat). but middle level admins can bypass this buy using unlink logic.
-
-## Vulnerability Detail
-a middle level admin can perform this actions:
-(x -> y) means x is admin of y (y linked to x)
-1. suppose we have this tree: Root0 (admin0) -> H1 (Admin1) -> H2 (Admin2) -> Root3 (Admin3) -> H4 (Admin4). (H1, H2, H4 are hats and Root0 is tophat and Root3 is "root tree")
-2. now Admin2 wants to remove (Root3 -> H4) tree from higher level admins(Admin1) access.
-3. Admin2 would create new TopHat Root1 and link it to H2. (H2 -> Root1).
-4. now Admin2 would change the link of Root3 from H2 to Root1 by calling `relinkTopHatWithinTree(Root3, Root1)`. because Admin2 is admins of the H2 and both Root3 and Root1 is linked to the H2 so this action would be possible. the tree would become: (Root2 -> H1 -> H2 -> Root1 -> Root3 -> H4)
-5. now Admin2 would call `unlinkTopHatFromTree(Root3)` and unlink Root1 from Root0 tree. because Admin2 created Root1 he would become admin of the Root1 and would be only one that have admin access to Root3. (Root1 -> Root3 -> H4)
-
-simple unlinking can't always make middle level admin to be new admin so middle level admin should perform one relink and then unlink.
-
-## Impact
-middle level admin can steal the child trees and become the solo admin of them
-
-## Code Snippet
-https://github.com/Hats-Protocol/hats-protocol/blob/fafcfdf046c0369c1f9e077eacd94a328f9d7af0/src/Hats.sol#L726-L732
-https://github.com/Hats-Protocol/hats-protocol/blob/fafcfdf046c0369c1f9e077eacd94a328f9d7af0/src/Hats.sol#L739-L755
-
-## Tool used
-Manual Review
-
-## Recommendation
-This is a logical issue and fixing it is a little hard. one fix is that only allow the tippy hat admin to unlink a child tree. one another solution is only allow relink if the child tree to upper level trees not another sub level tree. (the path from the tree to the tippy hat)
-
-## Discussion
-
-**spengrah**
-
-This is a good one, and a tough one! I can see a few potential resolutions (including those recommended by op):
-
-1. Only allow tippy top hats to relink child trees
-2. Only allow tippy top hats to unlink child trees
-3. Only allow relinking if the destination is the main tree
-4. Remove relinking altogether and require that relinking be done in three steps: a) admin unlinks, b) unlinked top hat requests new link, c) destination admin approves new link
-
-Not yet sure which is best...will thinking more about this.
-
-**spengrah**
-
-Likely going with option 3, cc @zobront 
-
-**zobront**
-
-@spengrah I agree with this. Best solution to me seems to be continuing to allow anyone to relink but checking that tippy top hat of sending tree and receiving tree are the same. Is that what you have in mind to enforce option 3?
-
-**spengrah**
-
-> I agree with this. Best solution to me seems to be continuing to allow anyone to relink but checking that tippy top hat of sending tree and receiving tree are the same. Is that what you have in mind to enforce option 3?
-
-@zobront actually that is not quite what I was thinking, but it's better, so now its what I'm thinking :)
-
-**spengrah**
-
-> checking that tippy top hat of sending tree and receiving tree are the same
-
-Actually, this is not sufficient since the described attack begins under the same tippy top hat. I think what we need to do instead is check that one or more of the following is true:
-
-1) destination is the same local tree as origin, ie by checking that they both share the same local tophat
-2) destination is the tippy top hat's local tree, ie by checking that the tippy tophat is equal to the local tophat for the destination
-3) caller wears the tippyTopHat
-
-cc @zobront 
-
-**spengrah**
-
-https://github.com/Hats-Protocol/hats-protocol/pull/113
-
-
-
-# Issue H-2: Signers can bypass checks and change threshold within a transaction 
+# Issue H-1: Signers can bypass checks and change threshold within a transaction 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/52 
 
@@ -166,12 +87,258 @@ https://github.com/Hats-Protocol/hats-zodiac/pull/5
 
 
 
+# Issue H-2: HatsSignerGate + MultiHatsSignerGate: more than maxSignatures can be claimed which leads to DOS in reconcileSignerCount 
+
+Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/51 
+
+## Found by 
+GimelSec, roguereddwarf, cducrest-brainbot
+
+## Summary
+The `HatsSignerGate.claimSigner` and `MultiHatsSignerGate.claimSigner` functions allow users to become signers.
+
+It is important that both functions do not allow that there exist more valid signers than `maxSigners`.
+
+This is because if there are more valid signers than `maxSigners`, any call to `HatsSignerGateBase.reconcileSignerCount` reverts, which means that no transactions can be executed.
+
+The only possibility to resolve this is for a valid signer to give up his signer hat. No signer will voluntarily give up his signer hat. And it is wrong that a signer must give it up. Valid signers that have claimed before `maxSigners` was reached should not be affected by someone trying to become a signer and exceeding `maxSigners`. In other words the situation where one of the signers needs to give up his signer hat should have never occurred in the first place.
+
+## Vulnerability Detail
+Think of the following scenario:
+
+1. `maxSignatures=10` and there are 10 valid signers
+2. The signers execute a transaction that calls `Safe.addOwnerWithThreshold` such that there are now 11 owners (still there are 10 valid signers)
+3. One of the 10 signers is no longer a wearer of the hat and `reconcileSignerCount` is called. So there are now 9 valid signers and 11 owners
+4. The signer that was no longer a wearer of the hat in the previous step now wears the hat again. However `reconcileSignerCount` is not called. So there are 11 owners and 10 valid signers. The HSG however still thinks there are 9 valid signers.
+
+When a new signer now calls `claimSigner`, all checks will pass and he will be swapped for the owner that is not a valid signer:
+```solidity
+        // 9 >= 10 is false
+        if (currentSignerCount >= maxSigs) {
+            revert MaxSignersReached();
+        }
+
+        // msg.sender is a new signer so he is not yet owner
+        if (safe.isOwner(msg.sender)) {
+            revert SignerAlreadyClaimed(msg.sender);
+        }
+
+        // msg.sender is a valid signer, he wears the signer hat
+        if (!isValidSigner(msg.sender)) {
+            revert NotSignerHatWearer(msg.sender);
+        }
+```
+
+So there are now 11 owners and 11 valid signers.
+This means when `reconcileSignerCount` is called, the following lines cause a revert:
+```solidity
+    function reconcileSignerCount() public {
+        address[] memory owners = safe.getOwners();
+        uint256 validSignerCount = _countValidSigners(owners);
+
+        // 11 > 10
+        if (validSignerCount > maxSigners) {
+            revert MaxSignersReached();
+        }
+```
+
+## Impact
+As mentioned before, we end up in a situation where one of the valid signers has to give up his signer hat in order for the HSG to become operable again.
+
+So one of the valid signers that has rightfully claimed his spot as a signer may lose his privilege to sign transactions.
+
+## Code Snippet
+https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGate.sol#L36-L69
+```solidity
+    function claimSigner() public virtual {
+        uint256 maxSigs = maxSigners; // save SLOADs
+        uint256 currentSignerCount = signerCount;
+
+
+        if (currentSignerCount >= maxSigs) {
+            revert MaxSignersReached();
+        }
+
+
+        if (safe.isOwner(msg.sender)) {
+            revert SignerAlreadyClaimed(msg.sender);
+        }
+
+
+        if (!isValidSigner(msg.sender)) {
+            revert NotSignerHatWearer(msg.sender);
+        }
+
+
+        /* 
+        We check the safe owner count in case there are existing owners who are no longer valid signers. 
+        If we're already at maxSigners, we'll replace one of the invalid owners by swapping the signer.
+        Otherwise, we'll simply add the new signer.
+        */
+        address[] memory owners = safe.getOwners();
+        uint256 ownerCount = owners.length;
+
+
+        if (ownerCount >= maxSigs) {
+            bool swapped = _swapSigner(owners, ownerCount, maxSigs, currentSignerCount, msg.sender);
+            if (!swapped) {
+                // if there are no invalid owners, we can't add a new signer, so we revert
+                revert NoInvalidSignersToReplace();
+            }
+        } else {
+            _grantSigner(owners, currentSignerCount, msg.sender);
+        }
+    }
+```
+
+https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/MultiHatsSignerGate.sol#L41-L81
+```solidity
+    function claimSigner(uint256 _hatId) public {
+        uint256 maxSigs = maxSigners; // save SLOADs
+        uint256 currentSignerCount = signerCount;
+
+
+        if (currentSignerCount >= maxSigs) {
+            revert MaxSignersReached();
+        }
+
+
+        if (safe.isOwner(msg.sender)) {
+            revert SignerAlreadyClaimed(msg.sender);
+        }
+
+
+        if (!isValidSignerHat(_hatId)) {
+            revert InvalidSignerHat(_hatId);
+        }
+
+
+        if (!HATS.isWearerOfHat(msg.sender, _hatId)) {
+            revert NotSignerHatWearer(msg.sender);
+        }
+
+
+        /* 
+        We check the safe owner count in case there are existing owners who are no longer valid signers. 
+        If we're already at maxSigners, we'll replace one of the invalid owners by swapping the signer.
+        Otherwise, we'll simply add the new signer.
+        */
+        address[] memory owners = safe.getOwners();
+        uint256 ownerCount = owners.length;
+
+
+        if (ownerCount >= maxSigs) {
+            bool swapped = _swapSigner(owners, ownerCount, maxSigs, currentSignerCount, msg.sender);
+            if (!swapped) {
+                // if there are no invalid owners, we can't add a new signer, so we revert
+                revert NoInvalidSignersToReplace();
+            }
+        } else {
+            _grantSigner(owners, currentSignerCount, msg.sender);
+        }
+
+
+        // register the hat used to claim. This will be the hat checked in `checkTransaction()` for this signer
+        claimedSignerHats[msg.sender] = _hatId;
+    }
+```
+
+https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGateBase.sol#L183-L217
+```solidity
+    function reconcileSignerCount() public {
+        address[] memory owners = safe.getOwners();
+        uint256 validSignerCount = _countValidSigners(owners);
+
+
+        if (validSignerCount > maxSigners) {
+            revert MaxSignersReached();
+        }
+
+
+        // update the signer count accordingly
+        signerCount = validSignerCount;
+
+
+        uint256 currentThreshold = safe.getThreshold();
+        uint256 newThreshold;
+        uint256 target = targetThreshold; // save SLOADs
+
+
+        if (validSignerCount <= target && validSignerCount != currentThreshold) {
+            newThreshold = validSignerCount;
+        } else if (validSignerCount > target && currentThreshold < target) {
+            newThreshold = target;
+        }
+        if (newThreshold > 0) {
+            bytes memory data = abi.encodeWithSignature("changeThreshold(uint256)", validSignerCount);
+
+
+            bool success = safe.execTransactionFromModule(
+                address(safe), // to
+                0, // value
+                data, // data
+                Enum.Operation.Call // operation
+            );
+
+
+            if (!success) {
+                revert FailedExecChangeThreshold();
+            }
+        }
+    }
+```
+
+## Tool used
+Manual Review
+
+## Recommendation
+The `HatsSignerGate.claimSigner` and `MultiHatsSignerGate.claimSigner` functions should call `reconcileSignerCount` such that they work with the correct amount of signers and the scenario described in this report cannot occur.
+
+```diff
+diff --git a/src/HatsSignerGate.sol b/src/HatsSignerGate.sol
+index 7a02faa..949d390 100644
+--- a/src/HatsSignerGate.sol
++++ b/src/HatsSignerGate.sol
+@@ -34,6 +34,8 @@ contract HatsSignerGate is HatsSignerGateBase {
+     /// @notice Function to become an owner on the safe if you are wearing the signers hat
+     /// @dev Reverts if `maxSigners` has been reached, the caller is either invalid or has already claimed. Swaps caller with existing invalid owner if relevant.
+     function claimSigner() public virtual {
++        reconcileSignerCount();
++
+         uint256 maxSigs = maxSigners; // save SLOADs
+         uint256 currentSignerCount = signerCount;
+```
+
+```diff
+diff --git a/src/MultiHatsSignerGate.sol b/src/MultiHatsSignerGate.sol
+index da74536..57041f6 100644
+--- a/src/MultiHatsSignerGate.sol
++++ b/src/MultiHatsSignerGate.sol
+@@ -39,6 +39,8 @@ contract MultiHatsSignerGate is HatsSignerGateBase {
+     /// @dev Reverts if `maxSigners` has been reached, the caller is either invalid or has already claimed. Swaps caller with existing invalid owner if relevant.
+     /// @param _hatId The hat id to claim signer rights for
+     function claimSigner(uint256 _hatId) public {
++        reconcileSignerCount();
++        
+         uint256 maxSigs = maxSigners; // save SLOADs
+         uint256 currentSignerCount = signerCount;
+```
+
+
+## Discussion
+
+**spengrah**
+
+I don't believe this is a duplicate of #46, which deals with number of owners being increased by another module, while the present issue deals with owners being increased by the safe's signers. That means, however, that it be a duplicate of #118 and #170.
+
+
+
 # Issue H-3: HatsSignerGateBase: valid signer threshold can be bypassed because HSG checks signatures differently from Safe which allows exploitation 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/50 
 
 ## Found by 
-roguereddwarf
+bin2chen, roguereddwarf
 
 ## Summary
 This report deals with how the `HatsSignerGate` and the `Safe` check signatures differently which opens the door to exploitation.
@@ -642,7 +809,7 @@ https://github.com/Hats-Protocol/hats-zodiac/pull/5
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/46 
 
 ## Found by 
-obront, roguereddwarf, cducrest-brainbot, GimelSec
+obront, roguereddwarf
 
 ## Summary
 
@@ -707,6 +874,52 @@ cc @zobront
 **spengrah**
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/10
+
+**zobront**
+
+Escalate for 10 USDC
+
+All three dups of this issue (#51, #104, #130) describe the same issue, in which more than `maxSigners` can be added by (a) removing a hat, (b) reconciling, and (c) adding the hat back. This is a valid attack path.
+
+This issue describes a separate issue, in which the extra signer can be added by an external module, which is a totally different attack with a different solution (note: @spengrah please make sure to review the other issues to ensure you have a fix that accounts for them).
+
+This issue should be deduplicated from the other 3, since the attack is totally unrelated and simply results in the same outcome.
+
+**sherlock-admin**
+
+ > Escalate for 10 USDC
+> 
+> All three dups of this issue (#51, #104, #130) describe the same issue, in which more than `maxSigners` can be added by (a) removing a hat, (b) reconciling, and (c) adding the hat back. This is a valid attack path.
+> 
+> This issue describes a separate issue, in which the extra signer can be added by an external module, which is a totally different attack with a different solution (note: @spengrah please make sure to review the other issues to ensure you have a fix that accounts for them).
+> 
+> This issue should be deduplicated from the other 3, since the attack is totally unrelated and simply results in the same outcome.
+
+You've created a valid escalation for 10 USDC!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**hrishibhat**
+
+Escalation accepted
+
+Given although the outcome is similar the underlying issues are different
+Considering #51, #104, and #130 as a separate issue. 
+
+
+**sherlock-admin**
+
+> Escalation accepted
+> 
+> Given although the outcome is similar the underlying issues are different
+> Considering #51, #104, and #130 as a separate issue. 
+> 
+
+This issue's escalations have been accepted!
+
+Contestants' payouts and scores will be updated according to the changes made on this issue.
 
 
 
@@ -797,7 +1010,7 @@ https://github.com/Hats-Protocol/hats-zodiac/pull/10
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/41 
 
 ## Found by 
-obront, roguereddwarf, cducrest-brainbot, unforgiven
+obront, roguereddwarf
 
 ## Summary
 
@@ -875,12 +1088,74 @@ Manual Review
 
 Use a more typical reentrancy guard format, such as checking to ensure `_guardEntries == 0` at the top of `checkTransaction()` or simply setting `_guardEntries = 1` in `checkTransaction()` instead of incrementing it.
 
+## Discussion
+
+**zobront**
+
+Escalate for 10 USDC
+
+To successfully duplicate a High Severity issue, it is required for an issue to meet a burden of proof of understanding the exploit. 
+
+#67 clearly meets this burden of proof. It explains the same exploit described in this report and deserves to be duplicated with it.
+
+#105 and #124 do not explain any exploit. They simply noticed that the reentrancy guard wouldn't work, couldn't find a way to take advantage of that, and submitted it without a way to use it. 
+
+My recommendation is that they are not valid issues, but at the very least they should be moved to a separate Medium issue to account for the fact that they did not find a High Severity exploit.
+
+**sherlock-admin**
+
+ > Escalate for 10 USDC
+> 
+> To successfully duplicate a High Severity issue, it is required for an issue to meet a burden of proof of understanding the exploit. 
+> 
+> #67 clearly meets this burden of proof. It explains the same exploit described in this report and deserves to be duplicated with it.
+> 
+> #105 and #124 do not explain any exploit. They simply noticed that the reentrancy guard wouldn't work, couldn't find a way to take advantage of that, and submitted it without a way to use it. 
+> 
+> My recommendation is that they are not valid issues, but at the very least they should be moved to a separate Medium issue to account for the fact that they did not find a High Severity exploit.
+
+You've created a valid escalation for 10 USDC!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**cducrest**
+
+It's a bit ambitious to have 4 issues describing the same line of codes as incorrect / vulnerable not being marked as duplicate, especially when they provide the same recommendation. I feel like going into such depths to describe the impact may not be necessary to ensure the safety of the protocol. 
+
+However, I agree that it can also feel weird that we would be awarded the same while your issue provides much more details. I could not find anything in the Sherlock docs pertaining to this situation, but maybe there should be a reward for the best issue describing a vulnerability.
+
+When first submitting these issues, I feel like I may take the risk that the issue is treated as medium / low by not providing enough details. Perhaps are you already awarded for having provided such details by ensuring your issue is considered valid?
+
+**hrishibhat**
+
+Escalation accepted
+
+Given that issues #41 & #67 have identified a valid attack path, considering #105 & #124 as a medium as it identifies underlying re-entrancy issue. 
+
+Note: Sherlock will make note of the above comments and discuss internally to add additional instructions in the guide to help resolve such scenarios in the future.
+
+**sherlock-admin**
+
+> Escalation accepted
+> 
+> Given that issues #41 & #67 have identified a valid attack path, considering #105 & #124 as a medium as it identifies underlying re-entrancy issue. 
+> 
+> Note: Sherlock will make note of the above comments and discuss internally to add additional instructions in the guide to help resolve such scenarios in the future.
+
+This issue's escalations have been accepted!
+
+Contestants' payouts and scores will be updated according to the changes made on this issue.
+
+
+
 # Issue H-8: Safe can be bricked because threshold is updated with validSignerCount instead of newThreshold 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/37 
 
 ## Found by 
-carrot, GimelSec, Allarious, duc, Met, obront, Dug, roguereddwarf, cccz
+cccz, carrot, duc, roguereddwarf, Allarious, Dug, GimelSec, obront, Met
 
 ## Summary
 
@@ -953,7 +1228,7 @@ https://github.com/Hats-Protocol/hats-zodiac/pull/9
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/35 
 
 ## Found by 
-obront, roguereddwarf, cducrest-brainbot, unforgiven
+obront, cducrest-brainbot, roguereddwarf, unforgiven
 
 ## Summary
 
@@ -1051,12 +1326,113 @@ https://github.com/Hats-Protocol/hats-protocol/pull/113
 
 
 
-# Issue M-1: Owners can be swapped even though they still wear their signer hats 
+# Issue M-1: attacker can perform malicious transactions in the safe because reentrancy is not implemented correctly in the checkTransaction() and checkAfterExecution() function in HSG 
+
+Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/124 
+
+## Found by 
+cducrest-brainbot, unforgiven
+
+## Summary
+to prevent reentrancy during the safe's `execTransaction()` function call code use `_guardEntries` and increase it in the `checkTransaction()` and decrease it in the `checkAfterExecution()`. but the logic is wrong and code won't underflow in the `checkAfterExecution()` if attacker perform reentrancy during the `execTransaction()`
+
+## Vulnerability Detail
+This is some part of the `checkTransaction()` and `checkAfterExecution()` code:
+```solidity
+    function checkTransaction(
+        address to,
+        uint256 value,
+        bytes calldata data,
+        Enum.Operation operation,
+        uint256 safeTxGas,
+        uint256 baseGas,
+        uint256 gasPrice,
+        address gasToken,
+        address payable refundReceiver,
+        bytes memory signatures,
+        address // msgSender
+    ) external override {
+        if (msg.sender != address(safe)) revert NotCalledFromSafe();
+
+        uint256 safeOwnerCount = safe.getOwners().length;
+        // uint256 validSignerCount = _countValidSigners(safe.getOwners());
+
+        // ensure that safe threshold is correct
+        reconcileSignerCount();
+
+        if (safeOwnerCount < minThreshold) {
+            revert BelowMinThreshold(minThreshold, safeOwnerCount);
+        }
+
+        // get the tx hash; view function
+        bytes32 txHash = safe.getTransactionHash(
+            // Transaction info
+            to,
+            value,
+            data,
+            operation,
+            safeTxGas,
+            // Payment info
+            baseGas,
+            gasPrice,
+            gasToken,
+            refundReceiver,
+            // Signature info
+            // We subtract 1 since nonce was just incremented in the parent function call
+            safe.nonce() - 1 // view function
+        );
+
+        uint256 validSigCount = countValidSignatures(txHash, signatures, signatures.length / 65);
+
+        unchecked {
+            ++_guardEntries;
+        }
+    }
+
+    /// @notice Post-flight check to prevent `safe` signers from removing this contract guard, changing any modules, or changing the threshold
+    /// @dev Modified from https://github.com/gnosis/zodiac-guard-mod/blob/988ebc7b71e352f121a0be5f6ae37e79e47a4541/contracts/ModGuard.sol#L86
+    function checkAfterExecution(bytes32, bool) external override {
+        if (msg.sender != address(safe)) revert NotCalledFromSafe();
+
+        // leave checked to catch underflows triggered by re-erntry attempts
+        --_guardEntries;
+    }
+```
+as you can see code increase the value of the `_guardEntries` in the `checkTransaction()` which is called before the transaction execution and decrease its value in the `checkAfterExecution` which is called after transaction execution. this won't protect against reentrancy during the safe's `execTransaction()` call. attacker can perform this actions:
+1. Transaction1 which has valid number of signers and set the value of the guard to 0x0. and call `safe.execTransaction(Transaction2)`.
+2.  Transaction2 which reset the value of the guard to the HSG address.
+3. now by calling `Tsafe.execTransaction(Transaction1)` code would first call `checkTransaction()` and would see the number of the signers is correct and then increase the value of the `_guardEntiries` to 1 and then code in safe would execute the Transaction1 which would set the guard to 0x0 and execute the Transaction2 in safe.
+4. because guard is 0x0 code would execute the Transaction2 and then during that code would re-set the value of the guard to the HSG address.
+5. now `checkAfterExecution()` would get exeucted and would see that guard value is correct and would decrease the `_guardEntiries`
+
+the attack is possible by changing the value of the `threshhold` in the safe. because code would perform two increase and one decrease during the reentrancy so the underflow won't happen.
+
+
+## Impact
+it's possible to set guard or threshold during the execTransaction() and execute another malicious transaction which resets guard and threshold
+
+## Code Snippet
+https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGateBase.sol#L507-L540
+
+https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGateBase.sol#L500-L503
+
+https://github.com/safe-global/safe-contracts/blob/cb22537c89ea4187f4ad141ab2e1abf15b27416b/contracts/Safe.sol#L172-L174
+
+
+## Tool used
+Manual Review
+
+## Recommendation
+set the value of the guard to 1 and decrease in the `checkTransaction()` and increase in the `checkAfterExecution()`.
+
+
+
+# Issue M-2: Owners can be swapped even though they still wear their signer hats 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/118 
 
 ## Found by 
-minhtrng, Dug
+Dug, minhtrng
 
 ## Summary
 
@@ -1101,122 +1477,141 @@ https://github.com/Hats-Protocol/hats-zodiac/pull/5
 
 
 
-# Issue M-2: An inconsistency in the `MaxSignersReached` of `reconcileSignerCount()` and `claimSigner()`. 
+# Issue M-3: middle level admins can steal child trees because function unlinkTopHatFromTree() is callable by them 
 
-Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/111 
+Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/116 
 
 ## Found by 
-GimelSec
+unforgiven
 
 ## Summary
-
-An inconsistency in the `MaxSignersReached` of `reconcileSignerCount()` and `claimSigner()`. Users could call `claimSigner()` to claim as a new signer, but `claimSigner()` should be reverted because the actual signer count exceeds `maxSigners`.
+in normal scenario middle level admins can't relink a child tree to another tree and when code link a tree it checks that the old and new admin is in the same tree(have same tippy hat). but middle level admins can bypass this buy using unlink logic.
 
 ## Vulnerability Detail
+a middle level admin can perform this actions:
+(x -> y) means x is admin of y (y linked to x)
+1. suppose we have this tree: Root0 (admin0) -> H1 (Admin1) -> H2 (Admin2) -> Root3 (Admin3) -> H4 (Admin4). (H1, H2, H4 are hats and Root0 is tophat and Root3 is "root tree")
+2. now Admin2 wants to remove (Root3 -> H4) tree from higher level admins(Admin1) access.
+3. Admin2 would create new TopHat Root1 and link it to H2. (H2 -> Root1).
+4. now Admin2 would change the link of Root3 from H2 to Root1 by calling `relinkTopHatWithinTree(Root3, Root1)`. because Admin2 is admins of the H2 and both Root3 and Root1 is linked to the H2 so this action would be possible. the tree would become: (Root2 -> H1 -> H2 -> Root1 -> Root3 -> H4)
+5. now Admin2 would call `unlinkTopHatFromTree(Root3)` and unlink Root1 from Root0 tree. because Admin2 created Root1 he would become admin of the Root1 and would be only one that have admin access to Root3. (Root1 -> Root3 -> H4)
 
-The `MaxSignersReached` error in `reconcileSignerCount()` is triggered if `validSignerCount > maxSigners`, but in `claimSigner()` it's triggered by `currentSignerCount >= maxSigs`.
-
-`validSignerCount` is a value obtained dynamically from `_countValidSigners(owners)` which is always the actual current count, but `currentSignerCount` is `signerCount` which may be stale.
-
-Suppose a Safe just attached a signer gate:
-* Safe owner: 15
-* maxSigners: 10
-* validSignerCount (aka `_countValidSigners(owners)`): 12
-* signerCount: 0
-
-In `reconcileSignerCount()`, it will trigger `MaxSignersReached` error in [L187](https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGateBase.sol#L187-L189) because `12 > 10` is true, but in `claimSigner()` it will not trigger the error in [L40](https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGate.sol#L40-L42) because `0 >= 10` is false.
+simple unlinking can't always make middle level admin to be new admin so middle level admin should perform one relink and then unlink.
 
 ## Impact
-
-Users who wear a signer hat could call `claimSigner()` to claim as a new signer, but `claimSigner()` should be reverted because the actual signer count exceeds `maxSigners`.
+middle level admin can steal the child trees and become the solo admin of them
 
 ## Code Snippet
-
-https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGateBase.sol#L187-L189
-https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGate.sol#L40-L42
-https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/MultiHatsSignerGate.sol#L45-L47
+https://github.com/Hats-Protocol/hats-protocol/blob/fafcfdf046c0369c1f9e077eacd94a328f9d7af0/src/Hats.sol#L726-L732
+https://github.com/Hats-Protocol/hats-protocol/blob/fafcfdf046c0369c1f9e077eacd94a328f9d7af0/src/Hats.sol#L739-L755
 
 ## Tool used
-
 Manual Review
 
 ## Recommendation
-
-Do not use the stale `signerCount` variable, always use `getSignerCount()` to dynamically get the current signer count by `_countValidSigners(safe.getOwners())`.
-
+This is a logical issue and fixing it is a little hard. one fix is that only allow the tippy hat admin to unlink a child tree. one another solution is only allow relink if the child tree to upper level trees not another sub level tree. (the path from the tree to the tippy hat)
 
 ## Discussion
 
 **spengrah**
 
-The vulnerability identified here is a very thin edge case, but it is legitimate. 
+This is a good one, and a tough one! I can see a few potential resolutions (including those recommended by op):
 
-Furthermore, the recommendation to forgo a `signerCount` state variable and instead always use a dynamic call such as `getSignerCount()` is interesting and could potentially simplify a lot of the logic / address some of the other findings. It might even be cheaper since we wouldn't have to write to storage in the places we're already checking dynamically.
+1. Only allow tippy top hats to relink child trees
+2. Only allow tippy top hats to unlink child trees
+3. Only allow relinking if the destination is the main tree
+4. Remove relinking altogether and require that relinking be done in three steps: a) admin unlinks, b) unlinked top hat requests new link, c) destination admin approves new link
+
+Not yet sure which is best...will thinking more about this.
+
+**spengrah**
+
+Likely going with option 3, cc @zobront 
+
+**zobront**
+
+@spengrah I agree with this. Best solution to me seems to be continuing to allow anyone to relink but checking that tippy top hat of sending tree and receiving tree are the same. Is that what you have in mind to enforce option 3?
+
+**spengrah**
+
+> I agree with this. Best solution to me seems to be continuing to allow anyone to relink but checking that tippy top hat of sending tree and receiving tree are the same. Is that what you have in mind to enforce option 3?
+
+@zobront actually that is not quite what I was thinking, but it's better, so now its what I'm thinking :)
+
+**spengrah**
+
+> checking that tippy top hat of sending tree and receiving tree are the same
+
+Actually, this is not sufficient since the described attack begins under the same tippy top hat. I think what we need to do instead is check that one or more of the following is true:
+
+1) destination is the same local tree as origin, ie by checking that they both share the same local tophat
+2) destination is the tippy top hat's local tree, ie by checking that the tippy tophat is equal to the local tophat for the destination
+3) caller wears the tippyTopHat
 
 cc @zobront 
 
 **spengrah**
 
-https://github.com/Hats-Protocol/hats-zodiac/pull/6
+https://github.com/Hats-Protocol/hats-protocol/pull/113
 
+**zobront**
 
+Escalate for 10 USDC
 
-# Issue M-3: `removeSigner()` would fail if `currentSignerCount < validSignerCount`. 
+This is a valid issue but the severity is wrong. 
 
-Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/107 
+A core assumption of the protocol is that admins are trustable. If we start questioning the admin trust assumptions, a whole new field of bugs opens up.
 
-## Found by 
-roguereddwarf, GimelSec
+With that in mind, it does feel like users would assume that if they are higher up the tree, they wouldn't be able to lose control of a sub hat. While they are giving complete control of the subhat to the mid-level admin, it seems like a fair assumption that that user wouldn't be able to remove their ownership over the hat. 
 
-## Summary
+For that reason, I think it's fair to call this a Medium, but it's definitely not a High, as the only possible paths for exploit are through a trusted address.
 
-`removeSigner()` would fail if `currentSignerCount < validSignerCount`, nobody could remove invalid signers.
+**sherlock-admin**
 
-## Vulnerability Detail
+ > Escalate for 10 USDC
+> 
+> This is a valid issue but the severity is wrong. 
+> 
+> A core assumption of the protocol is that admins are trustable. If we start questioning the admin trust assumptions, a whole new field of bugs opens up.
+> 
+> With that in mind, it does feel like users would assume that if they are higher up the tree, they wouldn't be able to lose control of a sub hat. While they are giving complete control of the subhat to the mid-level admin, it seems like a fair assumption that that user wouldn't be able to remove their ownership over the hat. 
+> 
+> For that reason, I think it's fair to call this a Medium, but it's definitely not a High, as the only possible paths for exploit are through a trusted address.
 
-Suppose we have a Safe with a signer gate:
-* owners.length: 10
+You've created a valid escalation for 10 USDC!
 
-At the beginning, only 3 owners wore a valid signer hat (`signerCount` is 3). Then the admin mint 3 hats for other owners (`_countValidSigners(owners)` will be 6), so only 4 owners are invalid.
-* currentSignerCount (aka `signerCount`): 3
-* validSignerCount (aka `_countValidSigners(owners)`): 6
+To remove the escalation from consideration: Delete your comment.
 
-If users call `removeSigner()` to remove invalid owners, the `signerCount` will update to `newSignerCount = currentSignerCount - 1`, which is `3 - 1 = 2`.
-But the 4th call of `removeSigner()` will fail because `currentSignerCount` is underflow in [L390](https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGateBase.sol#L390).
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
 
-The solution is that users should call `reconcileSignerCount()` to update `signerCount` before calling `removeSigner()`. But the solution would result in bad UX, that users don't know they should call `reconcileSignerCount()` first and get confused.
+**hrishibhat**
 
-On the other hand, it's possible that `reconcileSignerCount()` may be blocked. See more details in GimelSec issue `reconcileSignerCount() would be blocked if validSignerCount > maxSigners, Safe would not be able to execute any transactions, all assets would be locked`.
+Escalation accepted
 
-Also, `claimSigner()` could call `_swapSigner()` to remove invalid signers, but if `ownerCount < maxSigs`, it will only call `_grantSigner`, those invalid owners are still in the Safe.
+Given the complexity around the user admin structure and the permissions, and the preconditions for this attack to happen, 
+considering this issue a valid medium.
 
-## Impact
+**sherlock-admin**
 
-The `removeSigner()` would fail, nobody could call the function to remove invalid signers.
+> Escalation accepted
+> 
+> Given the complexity around the user admin structure and the permissions, and the preconditions for this attack to happen, 
+> considering this issue a valid medium. 
 
-## Code Snippet
+This issue's escalations have been accepted!
 
-https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGateBase.sol#L390
+Contestants' payouts and scores will be updated according to the changes made on this issue.
 
-## Tool used
+**sherlock-admin**
 
-Manual Review
+> Escalation accepted
+> 
+> Given the complexity around the user admin structure and the permissions, and the preconditions for this attack to happen, 
+> considering this issue a valid medium.
 
-## Recommendation
+This issue's escalations have been accepted!
 
-Use `validSignerCount - 1` in L390:
-
-```solidity
-                newSignerCount = validSignerCount - 1;
-```
-
-## Discussion
-
-**spengrah**
-
-This should be addressed by using a dynamic `getSignerCount` getter instead of trying to rely on the static `signerCount` state variable
-
-cc @zobront 
+Contestants' payouts and scores will be updated according to the changes made on this issue.
 
 
 
@@ -1225,7 +1620,7 @@ cc @zobront
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/96 
 
 ## Found by 
-Ace-30, GimelSec, Allarious, unforgiven, chaduke, 0xMojito
+0xMojito, Allarious, Ace-30, chaduke, GimelSec, unforgiven
 
 ## Summary
 some of the functions in the Hats and HatsIdUtilities contracts has recursive logics without limiting the number of iteration, this can cause unlimited gas usage if hat trees has huge depth and it won't be possible to call the contracts functions. functions `getImageURIForHat()`, `isAdminOfHat()`, `getTippyTopHatDomain()` and `noCircularLinkage()` would revert and because most of the logics callings those functions so contract would be in broken state for those hats.
@@ -1427,7 +1822,7 @@ Re-adding the severity dispute tag since existing signers (who have full control
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/85 
 
 ## Found by 
-GimelSec, roguereddwarf, cccz, ktg
+cccz, ktg, roguereddwarf, GimelSec
 
 ## Summary
 The Hats contract does not override the ERC1155.balanceOfBatch function
@@ -1521,7 +1916,7 @@ balances[i] = balanceOf(owners[i], ids[i]);
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/79 
 
 ## Found by 
-duc, Bauer, Allarious
+Allarious, duc, Bauer
 
 ## Summary
 `_removeSigner` can be called whenever a signer is no longer valid to remove an invalid signer. However, under certain situations, `removeSigner` incorrectly reduces the number of `signerCount` and sets the `threshold` incorrectly.
@@ -1693,106 +2088,12 @@ https://github.com/Hats-Protocol/hats-protocol/pull/108
 
 
 
-# Issue M-9: buildHatId returns incorrect value for lowest level child 
-
-Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/45 
-
-## Found by 
-obront
-
-## Summary
-
-If we call `buildHatId` with a level 14 hat (ie a hat with a full id that cannot have children) as the admin, rather than reverting (as it should) since they cannot have children, it returns a value.
-
-## Vulnerability Detail
-
-`buildHatId` is a public function that can be used to get the hatId of the child of a given hat. You input the admin hat and the `newHat` and it outputs the new hat's full ID:
-```solidity
-function buildHatId(uint256 _admin, uint16 _newHat) public pure returns (uint256 id) {
-    uint256 mask;
-    for (uint256 i = 0; i < MAX_LEVELS;) {
-        unchecked {
-            mask = uint256(
-                type(uint256).max
-                // should not overflow given known constants
-                >> (TOPHAT_ADDRESS_SPACE + (LOWER_LEVEL_ADDRESS_SPACE * i))
-            );
-        }
-        if (_admin & mask == 0) {
-            unchecked {
-                id = _admin
-                    | (
-                        uint256(_newHat)
-                        // should not overflow given known constants
-                        << (LOWER_LEVEL_ADDRESS_SPACE * (MAX_LEVELS - 1 - i))
-                    );
-            }
-            return id;
-        }
-
-        // should not overflow based on < MAX_LEVELS stopping condition
-        unchecked {
-            ++i;
-        }
-    }
-}
-```
-In the case that this function is called with an `adminHat` that is already at the lowest possible level, it should revert, since no children are possible. Instead, it returns a specific value:
-```solidity
-0x00000000.0000.0000.......0000
-```
-
-Here is a short test I wrote to illustrate this vulnerability:
-```solidity
-function testZach__BuildFinalHatId() public {
-    uint full = type(uint).max;
-    uint child = utils.buildHatId(full, 1);
-    assert(child == 0);
-}
-```
-
-## Impact
-
-The `buildHatId` function returns an incorrect value instead of reverting when it's called with lowest level children. This could mislead users or connecting protocols into thinking a child hat will be produced when, in fact, it will not.
-
-## Code Snippet
-
-https://github.com/Hats-Protocol/hats-protocol/blob/fafcfdf046c0369c1f9e077eacd94a328f9d7af0/src/HatsIdUtilities.sol#L64-L91
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-In the event that the no match is found, explicitly revert after the loop.
-
-## Discussion
-
-**spengrah**
-
-Tentative target cap is 7000 characters, which costs roughly 8,000,000 gas to write.
-
-**zobront**
-
-@spengrah I'm not sure what you mean by this. I think the comment was intended for another issue.
-
-**spengrah**
-
-@zobront whoops! that's definitely the case. Will move it over to the correct issue (#2).
-
-**spengrah**
-
-https://github.com/Hats-Protocol/hats-protocol/pull/104
-
-
-
-# Issue M-10: Safe threshold can be set above target threshold, causing transactions to revert 
+# Issue M-9: Safe threshold can be set above target threshold, causing transactions to revert 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/44 
 
 ## Found by 
-Allarious, duc, obront, cducrest-brainbot, unforgiven, cccz
+cccz, duc, Allarious, unforgiven, obront, cducrest-brainbot
 
 ## Summary
 
@@ -1891,12 +2192,12 @@ This issue is also resolved by using a dynamic signerCount() function instead of
 
 
 
-# Issue M-11: If signer gate is deployed to safe with more than 5 existing modules, safe will be bricked 
+# Issue M-10: If signer gate is deployed to safe with more than 5 existing modules, safe will be bricked 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/43 
 
 ## Found by 
-obront, roguereddwarf, cducrest-brainbot, juancito
+obront, roguereddwarf, juancito, cducrest-brainbot
 
 ## Summary
 
@@ -1989,7 +2290,7 @@ https://github.com/Hats-Protocol/hats-zodiac/pull/10
 
 
 
-# Issue M-12: If a hat is owned by address(0), phony signatures will be accepted by the safe 
+# Issue M-11: If a hat is owned by address(0), phony signatures will be accepted by the safe 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/39 
 
@@ -2071,7 +2372,7 @@ The easiest option is to add a check in `countValidSignatures()` that confirms t
 
 For extra security, you may consider implementing a check in `balanceOf()` that errors if we use `address(0)` as the address to check. (This is what OpenZeppelin does in their ERC721 implementation: https://github.com/OpenZeppelin/openzeppelin-contracts/blob/7f028d69593342673492b0a0b1679e2a898cf1cf/contracts/token/ERC721/ERC721.sol#L62-L65)
 
-# Issue M-13: Swap Signer fails if final owner is invalid due to off by one error in loop 
+# Issue M-12: Swap Signer fails if final owner is invalid due to off by one error in loop 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/38 
 
@@ -2184,12 +2485,12 @@ https://github.com/Hats-Protocol/hats-zodiac/pull/12
 
 
 
-# Issue M-14: targetThreshold can be set below minThreshold, violating important invariant 
+# Issue M-13: targetThreshold can be set below minThreshold, violating important invariant 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/36 
 
 ## Found by 
-carrot, obront, bin2chen, cducrest-brainbot, rvierdiiev, Bauer
+carrot, rvierdiiev, Bauer, obront, cducrest-brainbot
 
 ## Summary
 
@@ -2260,12 +2561,12 @@ https://github.com/Hats-Protocol/hats-zodiac/pull/8
 
 
 
-# Issue M-15: Changing hat toggle address can lead to unexpected changes in status 
+# Issue M-14: Changing hat toggle address can lead to unexpected changes in status 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/34 
 
 ## Found by 
-obront, rvierdiiev
+obront
 
 ## Summary
 
@@ -2332,9 +2633,49 @@ The same is true with `eligibility`, but not sure if there's anything you can do
 
 https://github.com/Hats-Protocol/hats-protocol/pull/116
 
+**cducrest**
+
+Escalate for 10 USDC
+
+Disagree with being sever enough for being a medium. The Sherlock doc state "The vulnerability must be something that is not considered an acceptable risk by a reasonable protocol team." However, as was explained, this problem is present both for `status` and `eligibility`, and a fix is possible and implemented in https://github.com/Hats-Protocol/hats-protocol/pull/116 only for `status`, proving that the risk is acceptable for the `eligibility` part thus acceptable for the `status` part.
+
+As noted in the comment by spengrah, the fix was implemented mostly because it is not expensive to do so, even though the risk is limited.
+
+**sherlock-admin**
+
+ > Escalate for 10 USDC
+> 
+> Disagree with being sever enough for being a medium. The Sherlock doc state "The vulnerability must be something that is not considered an acceptable risk by a reasonable protocol team." However, as was explained, this problem is present both for `status` and `eligibility`, and a fix is possible and implemented in https://github.com/Hats-Protocol/hats-protocol/pull/116 only for `status`, proving that the risk is acceptable for the `eligibility` part thus acceptable for the `status` part.
+> 
+> As noted in the comment by spengrah, the fix was implemented mostly because it is not expensive to do so, even though the risk is limited.
+
+You've created a valid escalation for 10 USDC!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**hrishibhat**
+
+Escalation rejected
+
+The issue is a valid medium
+Given the edge case that the attack is still possible and can cause a hat to be activated which should not be and vice versa. 
+
+**sherlock-admin**
+
+> Escalation rejected
+> 
+> The issue is a valid medium
+> Given the edge case that the attack is still possible and can cause a hat to be activated which should not be and vice versa. 
+
+This issue's escalations have been rejected!
+
+Watsons who escalated this issue will have their escalation amount deducted from their next payout.
 
 
-# Issue M-16: Owners of linkedin tophats cannot have eligibility revoked 
+
+# Issue M-15: Owners of linkedin tophats cannot have eligibility revoked 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/33 
 
@@ -2395,96 +2736,12 @@ Note: since `relinkTopHatToTree` can be called with the same origin and destinat
 
 
 
-# Issue M-17: HatsSignerGate.claimSigner will revert when signerCount = maxSigners and any of owners is invalid 
-
-Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/27 
-
-## Found by 
-rvierdiiev, cducrest-brainbot, carrot
-
-## Summary
-HatsSignerGate.claimSigner will revert when signerCount = maxSigners and any of owners is invalid. As result new signer will not be able to become owner.
-## Vulnerability Detail
-HatsSignerGate.claimSigner is called by hat wearer in order to become Safe owner.
-https://github.com/Hats-Protocol/hats-zodiac/blob/9455cc0957762f5dbbd8e62063d970199109b977/src/HatsSignerGate.sol#L36-L69
-```solidity
-    function claimSigner() public virtual {
-        uint256 maxSigs = maxSigners; // save SLOADs
-        uint256 currentSignerCount = signerCount;
-
-
-        if (currentSignerCount >= maxSigs) {
-            revert MaxSignersReached();
-        }
-
-
-        if (safe.isOwner(msg.sender)) {
-            revert SignerAlreadyClaimed(msg.sender);
-        }
-
-
-        if (!isValidSigner(msg.sender)) {
-            revert NotSignerHatWearer(msg.sender);
-        }
-
-
-        /* 
-        We check the safe owner count in case there are existing owners who are no longer valid signers. 
-        If we're already at maxSigners, we'll replace one of the invalid owners by swapping the signer.
-        Otherwise, we'll simply add the new signer.
-        */
-        address[] memory owners = safe.getOwners();
-        uint256 ownerCount = owners.length;
-
-
-        if (ownerCount >= maxSigs) {
-            bool swapped = _swapSigner(owners, ownerCount, maxSigs, currentSignerCount, msg.sender);
-            if (!swapped) {
-                // if there are no invalid owners, we can't add a new signer, so we revert
-                revert NoInvalidSignersToReplace();
-            }
-        } else {
-            _grantSigner(owners, currentSignerCount, msg.sender);
-        }
-    }
-```
-
-The first check in function checks that `signerCount`(count of valid owners that were updated last time) are less than `maxSigners`(maximum allowed signers count. Otherwise function will revert.
-
-But it's possible, that between last update of `signerCount` variable, some owner already became invalid and he should be changed by claimer, but function will revert.
-Claimer will need to call `reconcileSignerCount` function in order to update `signerCount` function and be able to call `claimSigner` function.
-## Impact
-Claimer can't become a signer as `signerCount` isn't updated.
-## Code Snippet
-Provided above
-## Tool used
-
-Manual Review
-
-## Recommendation
-I guess, that you don't need that check. Or the check can be `currentSignerCount > maxSigs`(without = sign). In case if each owner is valid, function will not swap any owner to claimer.
-And in case if any owner became invalid, then function will swap it.
-
-## Discussion
-
-**spengrah**
-
-This should be addressed by switching to a dynamically read `getSignerCount()` instead of relying on the signerCount state variable, as discussed in #111
-
-cc @zobront 
-
-**spengrah**
-
-https://github.com/Hats-Protocol/hats-zodiac/pull/6
-
-
-
-# Issue M-18: Hats can be overwritten 
+# Issue M-16: Hats can be overwritten 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/11 
 
 ## Found by 
-carrot, Allarious
+Allarious, carrot
 
 ## Summary
 Child hats can be created under a non-existent admin. Creating the admin allows overwriting the properties of the child-hats, which goes against the immutability of hats.
@@ -2594,7 +2851,7 @@ https://github.com/Hats-Protocol/hats-protocol/pull/109
 
 
 
-# Issue M-19: Hats.uri function can be DOSed by providing large details or imageURI string or cause large gas fees 
+# Issue M-17: Hats.uri function can be DOSed by providing large details or imageURI string or cause large gas fees 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/2 
 
