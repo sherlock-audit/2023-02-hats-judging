@@ -93,13 +93,17 @@ function unlinkTopHatFromTree(uint32 _topHatDomain) external {
 }
 ```
 
+
+
 ## Discussion
 
 **spengrah**
 
 https://github.com/Hats-Protocol/hats-protocol/pull/113
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue H-2: Safe can be bricked because threshold is updated with validSignerCount instead of newThreshold 
 
@@ -166,13 +170,17 @@ if (newThreshold > 0) {
 }
 ```
 
+
+
 ## Discussion
 
 **spengrah**
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/9
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue H-3: Signers can bypass checks to add new modules to a safe by abusing reentrancy 
 
@@ -257,6 +265,8 @@ Manual Review
 
 Use a more typical reentrancy guard format, such as checking to ensure `_guardEntries == 0` at the top of `checkTransaction()` or simply setting `_guardEntries = 1` in `checkTransaction()` instead of incrementing it.
 
+
+
 ## Discussion
 
 **zobront**
@@ -317,7 +327,9 @@ This issue's escalations have been accepted!
 
 Contestants' payouts and scores will be updated according to the changes made on this issue.
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue H-4: If another module adds a module, the safe will be bricked 
 
@@ -375,6 +387,8 @@ Manual Review
 
 The module guarding logic needs to be rethought. Given the large number of unbounded risks it opens up, I would recommend not allowing other modules on any safes that use this functionality.
 
+
+
 ## Discussion
 
 **spengrah**
@@ -399,7 +413,9 @@ Going with option 1 here
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/10
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue H-5: Other module can add owners to safe that push us above maxSigners, bricking safe 
 
@@ -449,6 +465,8 @@ Manual Review
 If `validSignerCount > maxSigners`, there should be some mechanism to reduce the number of signers rather than reverting.
 
 Alternatively, as suggested in another issue, to get rid of all the potential risks of having other modules able to make changes outside of your module's logic, we should create the limit that the HatsSignerGate module can only exist on a safe with no other modules.
+
+
 
 ## Discussion
 
@@ -518,7 +536,9 @@ This issue's escalations have been accepted!
 
 Contestants' payouts and scores will be updated according to the changes made on this issue.
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue H-6: Signers can brick safe by adding unlimited additional signers while avoiding checks 
 
@@ -589,6 +609,8 @@ There should be a check in `checkAfterExecution()` that ensures that the number 
 
 It also may be recommended that the `maxSigners` value is adjustable by the contract owner.
 
+
+
 ## Discussion
 
 **spengrah**
@@ -605,7 +627,9 @@ cc @zobront
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/5
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue H-7: HatsSignerGateBase: valid signer threshold can be bypassed because HSG checks signatures differently from Safe which allows exploitation 
 
@@ -979,6 +1003,8 @@ index 3e8bb5f..05f85a3 100644
 Instead of checking all signatures, only the first `threshold` ones will be checked.
 Also there is no need to check the length of the `signatures` bytes. All those checks are done by the Safe already.
 
+
+
 ## Discussion
 
 **spengrah**
@@ -989,7 +1015,9 @@ Excellent find. The recommended fix makes sense.
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/11
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue H-8: HatsSignerGate + MultiHatsSignerGate: more than maxSignatures can be claimed which leads to DOS in reconcileSignerCount 
 
@@ -1229,13 +1257,23 @@ index da74536..57041f6 100644
 ```
 
 
+
+
 ## Discussion
 
 **spengrah**
 
 I don't believe this is a duplicate of #46, which deals with number of owners being increased by another module, while the present issue deals with owners being increased by the safe's signers. That means, however, that it be a duplicate of #118 and #170.
 
+**spengrah**
 
+Addressed by https://github.com/Hats-Protocol/hats-zodiac/pull/5
+
+**zobront**
+
+@spengrah This blocks the specific path he used to get `validSigners > maxSigners`, but are there any other paths to get signers into the safe (such as through Safe directly)?
+
+If not, then most important is just to make sure there is zero way for that to happen through the contract and that invariant is rock solid. I can take another look too.
 
 # Issue H-9: Signers can bypass checks and change threshold within a transaction 
 
@@ -1304,6 +1342,8 @@ Manual Review
 
 Save the safe's current threshold in `checkTransaction()` before the transaction has executed, and compare the value after the transaction to that value from storage.
 
+
+
 ## Discussion
 
 **spengrah**
@@ -1336,7 +1376,13 @@ If this seems ok to you, then make sure to change the wording if your documentat
 
 So, this is ok, and I'll push a documentation/comments update.
 
+**zobront**
 
+Confirmed updated comments. This is still possible but is now clearly warned against.
+
+**MLON33**
+
+zobront added "Fix Approved" label
 
 # Issue M-1: Hats.uri function can be DOSed by providing large details or imageURI string or cause large gas fees 
 
@@ -1389,6 +1435,8 @@ Manual Review
 ## Recommendation
 Introduce a reasonable limit for the length of the `details` and `imageURI` field.
 
+
+
 ## Discussion
 
 **spengrah**
@@ -1407,7 +1455,9 @@ Tentative target cap is 7000 characters, which costs roughly 8,000,000 gas to wr
 
 https://github.com/Hats-Protocol/hats-protocol/pull/114
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-2: Hats can be overwritten 
 
@@ -1504,6 +1554,8 @@ require(_hats[admin].maxSupply > 0, "Admin not created")
 ```
 
 
+
+
 ## Discussion
 
 **spengrah**
@@ -1522,7 +1574,9 @@ if (lastId > 0) hat.lastHatId = lastId;
 
 https://github.com/Hats-Protocol/hats-protocol/pull/109
 
+**MLON33**
 
+zobront added "Fix Approved" label.
 
 # Issue M-3: Owners of linkedin tophats cannot have eligibility revoked 
 
@@ -1565,6 +1619,8 @@ Manual Review
 
 Create the ability for linked tophats to change their `toggle` and `eligibility` addresses one time upon being linked. This could be accomplished with an extra bit value in the `config` storage, which could be set and unset when tophats are linked and unlinked. 
 
+
+
 ## Discussion
 
 **spengrah**
@@ -1583,7 +1639,9 @@ Note: since `relinkTopHatToTree` can be called with the same origin and destinat
 
 @spengrah This sounds right to me. Part of linking and unlinking should be all the setup / wind down needed to turn it frmo tophat to normal hat and back. Your solution sound right.
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-4: Changing hat toggle address can lead to unexpected changes in status 
 
@@ -1638,6 +1696,8 @@ Manual Review
 ## Recommendation
 
 The `changeHatToggle()` function needs to call `checkHatToggle()` before changing over to the new toggle address, to ensure that the latest status is synced up.
+
+
 
 ## Discussion
 
@@ -1697,7 +1757,9 @@ This issue's escalations have been rejected!
 
 Watsons who escalated this issue will have their escalation amount deducted from their next payout.
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-5: targetThreshold can be set below minThreshold, violating important invariant 
 
@@ -1767,13 +1829,17 @@ function _setTargetThreshold(uint256 _targetThreshold) internal {
 }
 ```
 
+
+
 ## Discussion
 
 **spengrah**
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/8
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-6: Swap Signer fails if final owner is invalid due to off by one error in loop 
 
@@ -1880,13 +1946,17 @@ Perform the loop with `ownerCount` instead of `ownerCount - 1` to check all owne
 }
 ```
 
+
+
 ## Discussion
 
 **spengrah**
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/12
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-7: If a hat is owned by address(0), phony signatures will be accepted by the safe 
 
@@ -1970,13 +2040,23 @@ The easiest option is to add a check in `countValidSignatures()` that confirms t
 
 For extra security, you may consider implementing a check in `balanceOf()` that errors if we use `address(0)` as the address to check. (This is what OpenZeppelin does in their ERC721 implementation: https://github.com/OpenZeppelin/openzeppelin-contracts/blob/7f028d69593342673492b0a0b1679e2a898cf1cf/contracts/token/ERC721/ERC721.sol#L62-L65)
 
+
+
 ## Discussion
 
 **zobront**
 
 No fix made for this but it's solved by the fix to #50.
 
+**MLON33**
 
+> No fix made for this but it's solved by the fix to #50.
+
+https://github.com/Hats-Protocol/hats-zodiac/pull/11
+
+**MLON33**
+
+zobront added "Fix Approved" label
 
 # Issue M-8: If signer gate is deployed to safe with more than 5 existing modules, safe will be bricked 
 
@@ -2058,6 +2138,8 @@ function deployHatsSignerGate(
 }
 ```
 
+
+
 ## Discussion
 
 **spengrah**
@@ -2074,7 +2156,9 @@ Great, I agree with that.
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/10
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-9: Safe threshold can be set above target threshold, causing transactions to revert 
 
@@ -2172,13 +2256,17 @@ Edit the if statement in `reconcileSignerCount()` to always lower to the `target
 +if (newThreshold != currentThreshold) { ... update safe threshold ... }
 ```
 
+
+
 ## Discussion
 
 **spengrah**
 
 This issue is also resolved by using a dynamic signerCount() function instead of relying on the signerCount state var. This is implemented in https://github.com/Hats-Protocol/hats-zodiac/pull/6, with an additional test to demonstrate added in https://github.com/Hats-Protocol/hats-zodiac/pull/7
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-10: Can get around hats per level constraints using phantom levels 
 
@@ -2221,6 +2309,8 @@ Manual Review
 ## Recommendation
 
 Add logic in `isAdminOfHat()` to ensure that each hat along the path being checked has a `maxSupply > 0` and is therefore a real hat.
+
+
 
 ## Discussion
 
@@ -2295,7 +2385,9 @@ On the whole, agreed with the solution.
 
 https://github.com/Hats-Protocol/hats-protocol/pull/108
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-11: [Medium][Outdated State] `_removeSigner` incorrectly updates `signerCount` and safe `threshold` 
 
@@ -2343,6 +2435,8 @@ Check if the number of `validSignerCount` decreased instead of checking equality
 + if (validSignerCount >= currentSignerCount) {
 ```
 
+
+
 ## Discussion
 
 **spengrah**
@@ -2355,7 +2449,9 @@ cc @zobront
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/6
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-12: The Hats contract needs to override the ERC1155.balanceOfBatch function 
 
@@ -2417,6 +2513,8 @@ Manual Review
 ## Recommendation
 Consider overriding the ERC1155.balanceOfBatch function in Hats contract to return 0 when the hat is inactive or the wearer is ineligible.
 
+
+
 ## Discussion
 
 **spengrah**
@@ -2449,7 +2547,9 @@ with...
 balances[i] = balanceOf(owners[i], ids[i]);
 ```
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-13: Usage of HSG for existing safe can brick safe 
 
@@ -2496,6 +2596,8 @@ Manual Review
 
 Allow this value to be changed by owner, or have a function that checks the HSG is safe before making it active after it is wired to an existing safe.
 
+
+
 ## Discussion
 
 **spengrah**
@@ -2514,7 +2616,9 @@ cc @zobront
 
 Re-adding the severity dispute tag since existing signers (who have full control over the safe prior to attaching HSG) would be both the ones attaching HSG in the first place and needing to renounce or be revoked if they made a mistake to attach. To me, this means that this is not a high severity bug, since attaching / fixing an attachment of HSG are incentive-aligned.
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-14: Unbound recursive function call can use unlimited gas and break hats operation 
 
@@ -2607,6 +2711,8 @@ Manual Review
 ## Recommendation
 code should check and make sure that hat levels has a maximum level and doesn't allow actions when this level breaches. (keep depth of each tophat's tree and update it when actions happens and won't allow actions if they increase depth  higher than the threshold)
 
+
+
 ## Discussion
 
 **spengrah**
@@ -2651,8 +2757,6 @@ Was thinking that the additional data structure needed to count down would be on
 
 https://github.com/Hats-Protocol/hats-protocol/pull/118
 
-
-
 # Issue M-15: middle level admins can steal child trees because function unlinkTopHatFromTree() is callable by them 
 
 Source: https://github.com/sherlock-audit/2023-02-hats-judging/issues/116 
@@ -2686,6 +2790,8 @@ Manual Review
 
 ## Recommendation
 This is a logical issue and fixing it is a little hard. one fix is that only allow the tippy hat admin to unlink a child tree. one another solution is only allow relink if the child tree to upper level trees not another sub level tree. (the path from the tree to the tippy hat)
+
+
 
 ## Discussion
 
@@ -2789,7 +2895,9 @@ This issue's escalations have been accepted!
 
 Contestants' payouts and scores will be updated according to the changes made on this issue.
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-16: Owners can be swapped even though they still wear their signer hats 
 
@@ -2833,13 +2941,17 @@ Manual Review
 
 Perform a pre- and post-flight comparison on the safe owners, analogous to what is currently done with the modules.
 
+
+
 ## Discussion
 
 **spengrah**
 
 https://github.com/Hats-Protocol/hats-zodiac/pull/5
 
+**MLON33**
 
+zobront added "Fix Approved" label
 
 # Issue M-17: attacker can perform malicious transactions in the safe because reentrancy is not implemented correctly in the checkTransaction() and checkAfterExecution() function in HSG 
 
@@ -2941,4 +3053,16 @@ Manual Review
 set the value of the guard to 1 and decrease in the `checkTransaction()` and increase in the `checkAfterExecution()`.
 
 
+
+
+
+## Discussion
+
+**MLON33**
+
+zobront clarified 124 was previously duped to 41, but was separated because it didn't accurately express the High severity exploit.
+
+**MLON33**
+
+zobront added "Fix Approved" label
 
